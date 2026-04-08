@@ -4,7 +4,8 @@ Compare your SQL query results against others.
 
 ## Usage
 
-Place CSV files in folders with names like `1.csv`, `2.csv`, etc.
+Create a folder with your name.
+Place CSV files in folders with names in format: `1.csv`, `2.csv`, etc.
 
 **Compare two specific CSV files:**
 ```bash
