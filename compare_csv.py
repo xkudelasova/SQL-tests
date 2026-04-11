@@ -29,6 +29,42 @@ import sys
 import csv
 from pathlib import Path
 from collections import defaultdict
+from datetime import datetime
+from io import StringIO
+
+
+class OutputCapture:
+    """Captures console output to both print and save to file."""
+    
+    def __init__(self, enable_save=True):
+        self.enable_save = enable_save
+        self.buffer = StringIO()
+        self.original_print = print
+    
+    def write(self, text=""):
+        """Write text to both console and buffer."""
+        self.original_print(text)
+        self.buffer.write(text + "\n")
+    
+    def get_output(self):
+        """Get captured output."""
+        return self.buffer.getvalue()
+    
+    def save_to_file(self, filename):
+        """Save captured output to a file."""
+        if not self.enable_save:
+            return
+        content = self.get_output()
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+        self.original_print(f"\n💾 Results saved to: {filename}")
+
+
+def format_folder_names(folder1, folder2):
+    """Format folder names for filename."""
+    name1 = Path(folder1).name
+    name2 = Path(folder2).name
+    return f"{name1}_{name2}.txt"
 
 
 def compare_csv_files(file1_path, file2_path, verbose=True):
@@ -70,6 +106,8 @@ def compare_csv_files(file1_path, file2_path, verbose=True):
             # Check if one file has more rows
             remaining_file1 = list(reader1)
             remaining_file2 = list(reader2)
+            if remaining_file2:
+                line_num += len(remaining_file1)
             line_num = line_num if differences or (not remaining_file1 and not remaining_file2) else line_num
             
             if remaining_file1:
@@ -94,8 +132,11 @@ def compare_csv_files(file1_path, file2_path, verbose=True):
     return differences, None
 
 
-def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_name="Folder 2"):
+def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_name="Folder 2", capture=None):
     """Display comparison results between two CSV files."""
+    
+    if capture is None:
+        capture = OutputCapture(enable_save=False)
     
     differences, error = compare_csv_files(file1_path, file2_path)
     
@@ -105,44 +146,47 @@ def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_
     file_name = Path(file1_path).name
     
     if not differences:
-        print(f"  ✅ {file_name}: Identical")
+        capture.write(f"  ✅ {file_name}: Identical")
         return None, 0
     else:
-        print(f"  ⚠️  {file_name}: {len(differences)} difference(s)")
-        print(f"      {'-' * 80}")
+        capture.write(f"  ⚠️  {file_name}: {len(differences)} difference(s)")
+        capture.write(f"      {'-' * 80}")
         
         for diff in differences:
-            print(f"      Line {diff['line']}:")
-            print(f"        {folder1_name}: {diff['file1']}")
-            print(f"        {folder2_name}: {diff['file2']}")
+            capture.write(f"      Line {diff['line']}:")
+            capture.write(f"        {folder1_name}: {diff['file1']}")
+            capture.write(f"        {folder2_name}: {diff['file2']}")
         
-        print(f"      {'-' * 80}\n")
+        capture.write(f"      {'-' * 80}\n")
         return None, len(differences)
 
 
-def compare_folders(folder1, folder2):
+def compare_folders(folder1, folder2, capture=None):
     """Compare all CSV files in two folders."""
+    
+    if capture is None:
+        capture = OutputCapture(enable_save=True)
     
     folder1_path = Path(folder1)
     folder2_path = Path(folder2)
     
     if not folder1_path.is_dir():
-        print(f"❌ Error: '{folder1}' is not a directory.")
+        capture.write(f"❌ Error: '{folder1}' is not a directory.")
         return
     
     if not folder2_path.is_dir():
-        print(f"❌ Error: '{folder2}' is not a directory.")
+        capture.write(f"❌ Error: '{folder2}' is not a directory.")
         return
     
     csv_files1 = sorted(folder1_path.glob("*.csv"))
     csv_files2 = sorted(folder2_path.glob("*.csv"))
     
     if not csv_files1 or not csv_files2:
-        print("❌ Error: No CSV files found in one or both folders.")
+        capture.write("❌ Error: No CSV files found in one or both folders.")
         return
     
-    print(f"\n📊 Comparing: '{folder1}' vs '{folder2}'\n")
-    print("=" * 100)
+    capture.write(f"\n📊 Comparing: '{folder1}' vs '{folder2}'\n")
+    capture.write("=" * 100)
     
     total_differences = 0
     file_differences = {}
@@ -151,28 +195,33 @@ def compare_folders(folder1, folder2):
         file2 = folder2_path / file1.name
         
         if not file2.exists():
-            print(f"  ⚠️  {file1.name}: Missing in '{folder2}'")
+            capture.write(f"  ⚠️  {file1.name}: Missing in '{folder2}'")
             continue
         
         error, diff_count = display_comparison(
             str(file1), 
             str(file2),
             folder1_name=folder1,
-            folder2_name=folder2
+            folder2_name=folder2,
+            capture=capture
         )
         
         if error:
-            print(f"  {error}")
+            capture.write(f"  {error}")
         else:
             file_differences[file1.name] = diff_count
             total_differences += diff_count
     
     # Summary
-    print("=" * 100)
-    print(f"\n📈 SUMMARY:")
-    print(f"   Total files compared: {len(file_differences)}")
-    print(f"   Files with differences: {sum(1 for v in file_differences.values() if v > 0)}")
-    print(f"   Total line differences: {total_differences}\n")
+    capture.write("=" * 100)
+    capture.write(f"\n📈 SUMMARY:")
+    capture.write(f"   Total files compared: {len(file_differences)}")
+    capture.write(f"   Files with differences: {sum(1 for v in file_differences.values() if v > 0)}")
+    capture.write(f"   Total line differences: {total_differences}\n")
+    
+    # Save to file
+    output_filename = format_folder_names(folder1, folder2)
+    capture.save_to_file(output_filename)
 
 
 def compare_against_all(my_folder):
@@ -197,14 +246,16 @@ def compare_against_all(my_folder):
         print(f"❌ Error: No other folders with CSV files found in '{parent_dir}'")
         return
     
-    print(f"\n📊 Comparing: '{my_folder}' against all other folders\n")
-    print("=" * 100)
+    # Create main capture for overall output
+    main_capture = OutputCapture(enable_save=True)
+    main_capture.write(f"\n📊 Comparing: '{my_folder}' against all other folders\n")
+    main_capture.write("=" * 100)
     
     all_comparisons = defaultdict(lambda: {"count": 0, "folders": []})
     
     for other_folder in sorted(other_folders):
-        print(f"\n📂 vs '{other_folder.name}':")
-        print(f"   {'-' * 80}")
+        main_capture.write(f"\n📂 vs '{other_folder.name}':")
+        main_capture.write(f"   {'-' * 80}")
         
         csv_files = sorted(my_path.glob("*.csv"))
         total_diff = 0
@@ -213,37 +264,41 @@ def compare_against_all(my_folder):
             file2 = other_folder / file1.name
             
             if not file2.exists():
-                print(f"   ⚠️  {file1.name}: Not found in '{other_folder.name}'")
+                main_capture.write(f"   ⚠️  {file1.name}: Not found in '{other_folder.name}'")
                 continue
             
             differences, error = compare_csv_files(str(file1), str(file2))
             
             if error:
-                print(f"   {error}")
+                main_capture.write(f"   {error}")
                 continue
             
             if differences:
                 diff_count = len(differences)
-                print(f"   ⚠️  {file1.name}: {diff_count} difference(s)")
+                main_capture.write(f"   ⚠️  {file1.name}: {diff_count} difference(s)")
                 total_diff += diff_count
                 all_comparisons[file1.name]["count"] += diff_count
             else:
-                print(f"   ✅ {file1.name}: Identical")
+                main_capture.write(f"   ✅ {file1.name}: Identical")
             
             all_comparisons[file1.name]["folders"].append(other_folder.name)
         
-        print(f"   Total differences: {total_diff}\n")
+        main_capture.write(f"   Total differences: {total_diff}\n")
     
     # Final summary
-    print("=" * 100)
-    print(f"\n📈 FINAL SUMMARY (comparing '{my_folder}' against {len(other_folders)} folder(s)):\n")
+    main_capture.write("=" * 100)
+    main_capture.write(f"\n📈 FINAL SUMMARY (comparing '{my_folder}' against {len(other_folders)} folder(s)):\n")
     
     for file_name, data in sorted(all_comparisons.items()):
         if data["count"] > 0:
-            print(f"   {file_name}: {data['count']} total difference(s)")
+            main_capture.write(f"   {file_name}: {data['count']} total difference(s)")
     
     total_all = sum(d["count"] for d in all_comparisons.values())
-    print(f"\n   Total differences across all comparisons: {total_all}\n")
+    main_capture.write(f"\n   Total differences across all comparisons: {total_all}\n")
+    
+    # Save to file with format: folder_vs_all.txt
+    output_filename = f"{my_path.name}_vs_all.txt"
+    main_capture.save_to_file(output_filename)
 
 
 def main():
@@ -274,6 +329,8 @@ def main():
     
     # Check if comparing CSV files
     if arg1.endswith('.csv') and arg2.endswith('.csv'):
+        capture = OutputCapture(enable_save=True)
+        
         differences, error = compare_csv_files(arg1, arg2)
         
         if error:
@@ -282,22 +339,28 @@ def main():
         
         file1_name = Path(arg1).name
         file2_name = Path(arg2).name
+        file1_folder = Path(arg1).parent.name
+        file2_folder = Path(arg2).parent.name
         
-        print(f"\n📊 Comparing: '{arg1}' vs '{arg2}'\n")
-        print("=" * 100)
+        capture.write(f"\n📊 Comparing: '{arg1}' vs '{arg2}'\n")
+        capture.write("=" * 100)
         
         if not differences:
-            print(f"✅ Files are identical!\n")
+            capture.write(f"✅ Files are identical!\n")
         else:
-            print(f"⚠️  Found {len(differences)} difference(s):\n")
+            capture.write(f"⚠️  Found {len(differences)} difference(s):\n")
             for diff in differences:
-                print(f"Line {diff['line']}:")
-                print(f"  {arg1}: {diff['file1']}")
-                print(f"  {arg2}: {diff['file2']}\n")
+                capture.write(f"Line {diff['line']}:")
+                capture.write(f"  {arg1}: {diff['file1']}")
+                capture.write(f"  {arg2}: {diff['file2']}\n")
         
-        print("=" * 100)
-        print(f"\n📈 SUMMARY:")
-        print(f"   Total differences: {len(differences) if differences else 0}\n")
+        capture.write("=" * 100)
+        capture.write(f"\n📈 SUMMARY:")
+        capture.write(f"   Total differences: {len(differences) if differences else 0}\n")
+        
+        # Save to file
+        output_filename = f"{file1_folder}_{file2_folder}_{file1_name.replace('.csv', '')}.txt"
+        capture.save_to_file(output_filename)
         return
     
     # Check for invalid mix of files and folders
