@@ -1,4 +1,4 @@
 sweetie/
 teo/
-results/*
+.results/*
 !results/.gitkeep
