@@ -29,8 +29,15 @@ import sys
 import csv
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime
 from io import StringIO
+from itertools import zip_longest
+
+RESULTS_DIR = Path(".results")
+
+
+def normalize_pair_name(name1, name2):
+    """Return two names sorted alphabetically (case-insensitive)."""
+    return tuple(sorted((name1, name2), key=str.casefold))
 
 
 class OutputCapture:
@@ -51,30 +58,35 @@ class OutputCapture:
         return self.buffer.getvalue()
     
     def save_to_file(self, filename):
-        """Save captured output to a file."""
+        """Save captured output to .results/<filename>."""
         if not self.enable_save:
             return
+
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = RESULTS_DIR / Path(filename).name
+
         content = self.get_output()
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        self.original_print(f"\n💾 Results saved to: {filename}")
+
+        self.original_print(f"\n💾 Results saved to: {output_path}")
 
 
 def format_folder_names(folder1, folder2):
-    """Format folder names for filename."""
+    """Format normalized folder-pair filename."""
     name1 = Path(folder1).name
     name2 = Path(folder2).name
-    return f"{name1}_{name2}.txt"
+    a, b = normalize_pair_name(name1, name2)
+    return f"{a}_{b}.txt"
 
 
-def compare_csv_files(file1_path, file2_path, verbose=True):
+def compare_csv_files(file1_path, file2_path):
     """
     Compare two CSV files and return differences.
     
     Args:
         file1_path: Path to first CSV file
         file2_path: Path to second CSV file
-        verbose: If False, only return difference count
     
     Returns:
         List of differences and total count
@@ -94,42 +106,44 @@ def compare_csv_files(file1_path, file2_path, verbose=True):
              open(file2_path, 'r', encoding='utf-8') as f2:
             reader1 = csv.reader(f1)
             reader2 = csv.reader(f2)
+            rows1 = list(reader1)
+            rows2 = list(reader2)
+            line_count1 = len(rows1)
+            line_count2 = len(rows2)
             
-            for line_num, (row1, row2) in enumerate(zip(reader1, reader2), start=1):
+            for line_num, (row1, row2) in enumerate(zip_longest(rows1, rows2, fillvalue=None), start=1):
                 if row1 != row2:
                     differences.append({
                         'line': line_num,
                         'file1': row1,
                         'file2': row2
                     })
-            
-            # Check if one file has more rows
-            remaining_file1 = list(reader1)
-            remaining_file2 = list(reader2)
-            if remaining_file2:
-                line_num += len(remaining_file1)
-            line_num = line_num if differences or (not remaining_file1 and not remaining_file2) else line_num
-            
-            if remaining_file1:
-                for idx, row in enumerate(remaining_file1, start=line_num + 1):
-                    differences.append({
-                        'line': idx,
-                        'file1': row,
-                        'file2': []
-                    })
-            
-            if remaining_file2:
-                for idx, row in enumerate(remaining_file2, start=line_num + 1):
-                    differences.append({
-                        'line': idx,
-                        'file1': [],
-                        'file2': row
-                    })
     
     except Exception as e:
         return None, f"❌ Error reading files: {e}"
     
-    return differences, None
+    return differences, None, {
+        'file1_lines': line_count1,
+        'file2_lines': line_count2,
+    }
+
+
+def format_line_count_stat(file1_label, file2_label, line_count1, line_count2):
+    """Return a short line-count comparison message."""
+
+    if line_count1 == line_count2:
+        return f"  ✅ Line count: match ({line_count1} lines each)"
+
+    if line_count1 > line_count2:
+        return (
+            f"  ⚠️  Line count: mismatch ({file1_label} has {line_count1}, "
+            f"{file2_label} has {line_count2}; {file1_label} has {line_count1 - line_count2} more)"
+        )
+
+    return (
+        f"  ⚠️  Line count: mismatch ({file1_label} has {line_count1}, "
+        f"{file2_label} has {line_count2}; {file2_label} has {line_count2 - line_count1} more)"
+    )
 
 
 def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_name="Folder 2", capture=None):
@@ -138,18 +152,27 @@ def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_
     if capture is None:
         capture = OutputCapture(enable_save=False)
     
-    differences, error = compare_csv_files(file1_path, file2_path)
+    differences, error, stats = compare_csv_files(file1_path, file2_path)
     
     if error:
         return error, 0
     
     file_name = Path(file1_path).name
+    line_count_msg = format_line_count_stat(
+        folder1_name,
+        folder2_name,
+        stats['file1_lines'],
+        stats['file2_lines'],
+    )
     
     if not differences:
         capture.write(f"  ✅ {file_name}: Identical")
+        capture.write(line_count_msg)
+        capture.write("")
         return None, 0
     else:
         capture.write(f"  ⚠️  {file_name}: {len(differences)} difference(s)")
+        capture.write(line_count_msg)
         capture.write(f"      {'-' * 80}")
         
         for diff in differences:
@@ -157,7 +180,8 @@ def display_comparison(file1_path, file2_path, folder1_name="Folder 1", folder2_
             capture.write(f"        {folder1_name}: {diff['file1']}")
             capture.write(f"        {folder2_name}: {diff['file2']}")
         
-        capture.write(f"      {'-' * 80}\n")
+        capture.write(f"      {'-' * 80}")
+        capture.write("")
         return None, len(differences)
 
 
@@ -178,10 +202,10 @@ def compare_folders(folder1, folder2, capture=None):
         capture.write(f"❌ Error: '{folder2}' is not a directory.")
         return
     
-    csv_files1 = sorted(folder1_path.glob("*.csv"))
-    csv_files2 = sorted(folder2_path.glob("*.csv"))
+    csv_files1 = {p.name: p for p in folder1_path.glob("*.csv")}
+    csv_files2 = {p.name: p for p in folder2_path.glob("*.csv")}
     
-    if not csv_files1 or not csv_files2:
+    if not csv_files1 and not csv_files2:
         capture.write("❌ Error: No CSV files found in one or both folders.")
         return
     
@@ -190,12 +214,17 @@ def compare_folders(folder1, folder2, capture=None):
     
     total_differences = 0
     file_differences = {}
+    all_file_names = sorted(set(csv_files1.keys()) | set(csv_files2.keys()), key=str.casefold)
     
-    for file1 in csv_files1:
-        file2 = folder2_path / file1.name
-        
-        if not file2.exists():
-            capture.write(f"  ⚠️  {file1.name}: Missing in '{folder2}'")
+    for file_name in all_file_names:
+        file1 = csv_files1.get(file_name)
+        file2 = csv_files2.get(file_name)
+
+        if file1 is None:
+            capture.write(f"  ⚠️  {file_name}: Missing in '{folder1}'")
+            continue
+        if file2 is None:
+            capture.write(f"  ⚠️  {file_name}: Missing in '{folder2}'")
             continue
         
         error, diff_count = display_comparison(
@@ -209,7 +238,7 @@ def compare_folders(folder1, folder2, capture=None):
         if error:
             capture.write(f"  {error}")
         else:
-            file_differences[file1.name] = diff_count
+            file_differences[file_name] = diff_count
             total_differences += diff_count
     
     # Summary
@@ -219,7 +248,7 @@ def compare_folders(folder1, folder2, capture=None):
     capture.write(f"   Files with differences: {sum(1 for v in file_differences.values() if v > 0)}")
     capture.write(f"   Total line differences: {total_differences}\n")
     
-    # Save to file
+    # Save to file (normalized pair name)
     output_filename = format_folder_names(folder1, folder2)
     capture.save_to_file(output_filename)
 
@@ -267,19 +296,35 @@ def compare_against_all(my_folder):
                 main_capture.write(f"   ⚠️  {file1.name}: Not found in '{other_folder.name}'")
                 continue
             
-            differences, error = compare_csv_files(str(file1), str(file2))
+            differences, error, stats = compare_csv_files(str(file1), str(file2))
             
             if error:
                 main_capture.write(f"   {error}")
                 continue
+
+            file_status = (
+                f"   ⚠️  {file1.name}: {len(differences)} difference(s)"
+                if differences
+                else f"   ✅ {file1.name}: Identical"
+            )
+            main_capture.write(file_status)
             
+            main_capture.write(
+                "   "
+                + format_line_count_stat(
+                    my_path.name,
+                    other_folder.name,
+                    stats['file1_lines'],
+                    stats['file2_lines'],
+                ).strip()
+            )
+
             if differences:
                 diff_count = len(differences)
-                main_capture.write(f"   ⚠️  {file1.name}: {diff_count} difference(s)")
                 total_diff += diff_count
                 all_comparisons[file1.name]["count"] += diff_count
-            else:
-                main_capture.write(f"   ✅ {file1.name}: Identical")
+
+            main_capture.write("")
             
             all_comparisons[file1.name]["folders"].append(other_folder.name)
         
@@ -331,19 +376,27 @@ def main():
     if arg1.endswith('.csv') and arg2.endswith('.csv'):
         capture = OutputCapture(enable_save=True)
         
-        differences, error = compare_csv_files(arg1, arg2)
+        differences, error, stats = compare_csv_files(arg1, arg2)
         
         if error:
             print(error)
             sys.exit(1)
         
         file1_name = Path(arg1).name
-        file2_name = Path(arg2).name
         file1_folder = Path(arg1).parent.name
         file2_folder = Path(arg2).parent.name
+        a, b = normalize_pair_name(file1_folder, file2_folder)
         
         capture.write(f"\n📊 Comparing: '{arg1}' vs '{arg2}'\n")
         capture.write("=" * 100)
+        capture.write(
+            format_line_count_stat(
+                arg1,
+                arg2,
+                stats['file1_lines'],
+                stats['file2_lines'],
+            )
+        )
         
         if not differences:
             capture.write(f"✅ Files are identical!\n")
@@ -358,8 +411,8 @@ def main():
         capture.write(f"\n📈 SUMMARY:")
         capture.write(f"   Total differences: {len(differences) if differences else 0}\n")
         
-        # Save to file
-        output_filename = f"{file1_folder}_{file2_folder}_{file1_name.replace('.csv', '')}.txt"
+        # Save to normalized filename in .results
+        output_filename = f"{a}_{b}_{Path(file1_name).stem}.txt"
         capture.save_to_file(output_filename)
         return
     
